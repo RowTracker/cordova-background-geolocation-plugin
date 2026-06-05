@@ -193,8 +193,12 @@ public class LocationServiceImpl extends Service implements ProviderDelegate, Lo
                 mResolver.getAccountType());
 
         String authority = mResolver.getAuthority();
-        ContentResolver.setIsSyncable(mSyncAccount, authority, 1);
-        ContentResolver.setSyncAutomatically(mSyncAccount, authority, true);
+        try {
+            ContentResolver.setIsSyncable(mSyncAccount, authority, 1);
+            ContentResolver.setSyncAutomatically(mSyncAccount, authority, true);
+        } catch (SecurityException ex) {
+            logger.warn("Skipping sync settings initialization; WRITE_SYNC_SETTINGS not granted", ex);
+        }
 
         mLocationDAO = DAOFactory.createLocationDAO(this);
 
