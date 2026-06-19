@@ -58,7 +58,13 @@ public class NotificationHelper {
             builder.setContentText(text);
             builder.setOngoing(true);
             if (smallIcon != null && !smallIcon.isEmpty()) {
-                builder.setSmallIcon(mResolver.getDrawable(smallIcon));
+                int smallIconId = mResolver.getDrawable(smallIcon);
+                if (smallIconId != 0) {
+                    builder.setSmallIcon(smallIconId);
+                } else {
+                    logger.warn("The resource " + smallIcon + " was not found in the drawable folder. Falling back to default small icon.");
+                    builder.setSmallIcon(android.R.drawable.ic_menu_mylocation);
+                }
             } else {
                 builder.setSmallIcon(android.R.drawable.ic_menu_mylocation);
             }
