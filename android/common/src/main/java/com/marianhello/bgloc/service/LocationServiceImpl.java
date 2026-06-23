@@ -28,6 +28,7 @@ import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
+import android.os.PowerManager;
 import android.os.Process;
 import androidx.annotation.Nullable;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
@@ -128,6 +129,11 @@ public class LocationServiceImpl extends Service implements ProviderDelegate, Lo
     private static LocationTransform sLocationTransform;
     private static LocationProviderFactory sLocationProviderFactory;
 
+    private static final String TAG = "RowingTrackingService";
+    private static final String WAKE_LOCK_TAG = "RowingApp::TrackingWakeLock";
+
+    private PowerManager.WakeLock wakeLock = null;
+
     private class ServiceHandler extends Handler {
         public ServiceHandler(Looper looper) {
             super(looper);
@@ -193,13 +199,16 @@ public class LocationServiceImpl extends Service implements ProviderDelegate, Lo
                 mResolver.getAccountType());
 
         String authority = mResolver.getAuthority();
-        try {
-            ContentResolver.setIsSyncable(mSyncAccount, authority, 1);
-            ContentResolver.setSyncAutomatically(mSyncAccount, authority, true);
-        } catch (SecurityException ex) {
-            logger.warn("Skipping sync settings initialization; WRITE_SYNC_SETTINGS not granted", ex);
+        if (Build.VERSION.SDK_INT < 34) { // Only attempt on older Android versions
+            try {
+                ContentResolver.setIsSyncable(mSyncAccount, authority, 1);
+                ContentResolver.setSyncAutomatically(mSyncAccount, authority, true);
+            } catch (SecurityException ex) {
+                logger.warn("Skipping sync settings initialization; WRITE_SYNC_SETTINGS not granted", ex);
+            }
+        } else {
+            logger.info("Skipping legacy sync initialization for modern Android API");
         }
-
         mLocationDAO = DAOFactory.createLocationDAO(this);
 
         mPostLocationTask = new PostLocationTask(mLocationDAO,
@@ -250,7 +259,7 @@ public class LocationServiceImpl extends Service implements ProviderDelegate, Lo
             mPostLocationTask.shutdown();
         }
 
-
+        releaseWakeLock(); //ATW
         unregisterReceiver(connectivityChangeReceiver);
 
         sIsRunning = false;
@@ -398,7 +407,7 @@ public class LocationServiceImpl extends Service implements ProviderDelegate, Lo
         if (mProvider != null) {
             mProvider.onStop();
         }
-
+        releaseWakeLock(); //ATW
         stopForeground(true);
         stopSelf();
 
@@ -423,12 +432,14 @@ public class LocationServiceImpl extends Service implements ProviderDelegate, Lo
             }
             super.startForeground(NOTIFICATION_ID, notification);
             mIsInForeground = true;
+            acquireWakeLock(); //ATW
         }
     }
 
     @Override
     public synchronized void stopForeground() {
         if (sIsRunning && mIsInForeground) {
+            releaseWakeLock(); //ATW
             stopForeground(true);
             if (mProvider != null) {
                 mProvider.onCommand(LocationProvider.CMD_SWITCH_MODE,
@@ -437,7 +448,29 @@ public class LocationServiceImpl extends Service implements ProviderDelegate, Lo
             mIsInForeground = false;
         }
     }
+    private void acquireWakeLock() {
+        if (wakeLock == null) {
+            PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (powerManager != null) {
+                // PARTIAL_WAKE_LOCK keeps the CPU on when the screen turns off
+                wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG);
 
+                // Optional but recommended: Prevent battery drain if your service crashes
+                // This automatically releases the lock after 4 hours (adjust as needed for a long row)
+                wakeLock.acquire(4 * 60 * 60 * 1000L);
+                logger.debug("{} WakeLock safely acquired.", TAG);
+            }
+        }
+    }
+
+    private void releaseWakeLock() {
+        // Safely check if the lock is held before releasing to prevent crashes
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+            wakeLock = null;
+            logger.debug("{} WakeLock safely released.", TAG);
+        }
+    }
     @Override
     public synchronized void configure(Config config) {
         if (mConfig == null) {
@@ -455,6 +488,7 @@ public class LocationServiceImpl extends Service implements ProviderDelegate, Lo
             public void run() {
                 if (sIsRunning) {
                     if (currentConfig.getStartForeground() == true && mConfig.getStartForeground() == false) {
+                        releaseWakeLock(); //ATW
                         stopForeground(true);
                     }
 
